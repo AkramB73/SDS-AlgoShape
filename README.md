@@ -1,5 +1,5 @@
 # AlgoShape
 
-An image-vectorisation library
+An image-vectorisation library.
 
 
