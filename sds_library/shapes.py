@@ -10,7 +10,7 @@ class Shape(abc.ABC):
     def __init__(self, palette):
         rgb_color = random.choice(palette)
         
-        # Random alpha value allows for transparency and blending.
+        # Random alpha value allows for transparency and blending
         alpha = np.random.randint(50, 150)
         self._color: RGBA = rgb_color + (alpha,)    
 
@@ -20,17 +20,10 @@ class Shape(abc.ABC):
 
     @abc.abstractmethod
     def random_init(self, img_width: int, img_height: int):
-        """
-        Randomly initializes the shape's properties (center,
-        radius, vertices) within the image bounds.
-        """
         pass
 
     @abc.abstractmethod
     def contains(self, x: int, y: int) -> bool:
-        """
-        Checks if a given point (x, y) is inside the shape.
-        """
         pass
 
 # Shape Implementations 
@@ -42,7 +35,7 @@ class Circle(Shape):
         self.radius = 0
 
     def random_init(self, img_width: int, img_height: int):
-        # kept it at half the max radius possible to stop a shape from dominating. 
+        # Kept it at half the max radius possible to stop a shape from dominating. 
         max_radius = min(img_width, img_height) // 4
         self.radius = np.random.randint(5, max_radius)
         # Sets the smallest size of radius being 5 pixels.
@@ -93,10 +86,7 @@ class Triangle(Shape):
         self.p3 = (np.random.randint(0, img_width), np.random.randint(0, img_height))
 
     def contains(self, x: int, y: int) -> bool:
-        """
-        Checks if the point (x, y) is inside the triangle defined by p1, p2, p3.
-        This is done using barycentric coordinates or checking sign of cross-products.
-        """
+        # Barycentric technique to check if point is inside triangle
         p = (x, y)
 
         # A point is inside a triangle if it's on the same side of all three edges.

@@ -2,16 +2,11 @@ import cv2
 import numpy as np
 import random
 from sklearn.cluster import KMeans
+from typing import List, Tuple 
+
+Palette = List[Tuple[int, int, int]]
 
 def generate_palette_kmeans(image: np.ndarray, n_colors: int) -> list:
-    """
-    Args:
-        image (np.ndarray): The target image.
-        n_colors (int): The number of colors to include in the palette.
-
-    Returns:
-        Palette: A list of k RGB color tuples.
-    """
     if n_colors <= 0:   
         raise ValueError("Number of colors must be greater than 0.")
     
@@ -27,6 +22,3 @@ def generate_palette_kmeans(image: np.ndarray, n_colors: int) -> list:
     palette_colors = kmeans.cluster_centers_.astype(np.uint8)
 
     return [tuple(color) for color in palette_colors]
-
-
-

@@ -9,7 +9,6 @@ PixelCoords = List[Tuple[int, int]]
 ImageArray = np.ndarray
 RGBA = Tuple[int, int, int, int]
 
-
 def full_fitness(
     agent: Agent,
     target_image: np.ndarray,
@@ -42,7 +41,6 @@ def full_fitness(
         # Ensure the box has a valid area
         if x1 >= x2 or y1 >= y2:
             continue
-
 
         box_h, box_w = int(y2 - y1), int(x2 - x1)
         shape_layer = np.zeros((box_h, box_w, 4), dtype=np.float32)
@@ -81,14 +79,11 @@ def partial_test(
     agent: Agent,
     target_image: ImageArray,
     samples: PixelCoords,
-    background_color: RGBA,
-    error_threshold: float
-) -> bool:
+) -> float:
     total_error = 0.0
 
-    for x, y in samples:
-
-        predicted_color = agent.render_pixel(x, y, background_color)
+    for x,y in samples:
+        predicted_color = agent.render_pixel(x, y)
 
         actual_color = target_image[y, x]
 
@@ -100,7 +95,5 @@ def partial_test(
         )
         total_error += error
 
-    average_error = total_error / len(samples)
-
-    return average_error < error_threshold
+    return total_error / len(samples) if samples else 0.0
 
