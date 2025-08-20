@@ -56,6 +56,8 @@ class Rectangle(Shape):
 
 class Triangle(Shape):
     def random_init(self, img_width: int, img_height: int):
+        img_height *= 1.1
+        img_width *= 1.1
         self.p1 = (float(np.random.randint(0, img_width)), float(np.random.randint(0, img_height)))
         self.p2 = (float(np.random.randint(0, img_width)), float(np.random.randint(0, img_height)))
         self.p3 = (float(np.random.randint(0, img_width)), float(np.random.randint(0, img_height)))

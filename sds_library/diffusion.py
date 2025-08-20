@@ -20,7 +20,7 @@ def _parallel_full_fitness_wrapper(args: Tuple) -> float:
     return full_fitness(agent_shapes, target, background)
 
 class DiffusionSearch:
-    def __init__(self, target, palette, n_agents=50, shapes_per_agent=25, n_samples=50, start_threshold=255.0, end_threshold=25.0, background_color=(255, 255, 255, 255)):
+    def __init__(self, target, palette, n_agents=50, shapes_per_agent=25, n_samples=50, start_threshold=255.0, end_threshold=10, background_color=(255, 255, 255, 255)):
         self.target = target
         self.palette = palette
         self.n_agents = n_agents
@@ -42,26 +42,24 @@ class DiffusionSearch:
 
     def _calculate_annealing_threshold(self, current_iteration, total_iterations):
         progress = current_iteration / total_iterations
-        decay_factor = np.exp(-7.0 * progress)
+        decay_factor = np.exp(-3*progress)
         return self.end_threshold + (self.start_threshold - self.end_threshold) * decay_factor
 
+# In sds_library/diffusion.py inside the DiffusionSearch class
+
     def step(self, current_iteration, total_iterations):
+        # (The first part of the function is the same)
         samples = sample_pixels(self.img_size[0], self.img_size[1], self.n_samples)
-        
         all_scores = [0.0] * self.n_agents
-        
-        # --- FIX: Reuse the existing executor instead of creating a new one ---
         tasks_args = [(agent, self.target, samples) for agent in self.population]
         future_to_idx = {self.executor.submit(_parallel_test_wrapper, args): i for i, args in enumerate(tasks_args)}
-        
         for future in as_completed(future_to_idx):
             idx = future_to_idx[future]
             try:
                 all_scores[idx] = future.result()
             except Exception as e:
                 all_scores[idx] = float('inf')
-
-        # (The rest of the step logic is unchanged)
+        
         population_average_error = np.mean([s for s in all_scores if s != float('inf')]) if any(s != float('inf') for s in all_scores) else float('inf')
         annealing_threshold = self._calculate_annealing_threshold(current_iteration, total_iterations)
         current_threshold = min(population_average_error, annealing_threshold)
@@ -75,17 +73,32 @@ class DiffusionSearch:
         random.shuffle(inactive_indices)
         for inactive_idx in inactive_indices:
             communicating_idx = random.choice(range(self.n_agents))
-            if self.population[communicating_idx].is_active:
-                self.population[inactive_idx].shapes = list(self.population[communicating_idx].shapes)
-                self.population[inactive_idx]._prepare_data_for_numba() 
-            else:
-                self.population[inactive_idx]._create_random_shapes()
+            
+            inactive_agent = self.population[inactive_idx]
 
+            if self.population[communicating_idx].is_active:
+                active_agent = self.population[communicating_idx]
+                
+                # OPTIMIZED: Copy the efficient NumPy arrays directly
+                inactive_agent.shape_params = active_agent.shape_params.copy()
+                inactive_agent.shape_colors = active_agent.shape_colors.copy()
+                
+                # We still need to update the Python-side objects for full rendering later
+                inactive_agent.shapes = list(active_agent.shapes) 
+                
+                inactive_agent.mutate() # Still mutate
+            else:
+                inactive_agent._create_random_shapes()
+        
+       
     def run(self, iterations):
         print(f"Starting SDS with {self.n_agents} agents for {iterations} iterations...")
         for i in range(iterations):
-            self.step(i, iterations)
-            print(f"Completed iteration {i + 1}/{iterations}")
+            #threshold_used = self.step(current_iteration=i, total_iterations=iterations)
+            self.step(current_iteration=i, total_iterations=iterations)
+            if (i + 1) % 250 == 0:
+                print(f"Completed iteration {i + 1}")
+
         print("SDS run complete.")
 
     def get_best_agents(self, n: int = 1) -> List[Agent]:
