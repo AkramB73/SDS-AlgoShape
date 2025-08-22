@@ -23,27 +23,41 @@ except ImportError:
 # ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
 # --- EDIT THESE VALUES ---
 INPUT_IMAGE_PATH = "/Users/akrambellala/Desktop/1.jpg" # <-- SET YOUR IMAGE PATH HERE
-OUTPUT_FILENAME  = "output_best_agent.png"
+OUTPUT_FILENAME  = "output_overlapped.png"
 
 # Resize the image for faster processing
 PROCESSING_WIDTH = 250
 PROCESSING_HEIGHT = 250
 
-ITERATIONS = 2000
-N_AGENTS = 10
-SHAPES_PER_AGENT = 500
-PALETTE_SIZE = 100
-N_SAMPLES = 100 # The Numba optimization makes this very fast
+ITERATIONS = 1000
+PALETTE_SIZE = 250
+N_SAMPLES = 2 # Samples per sector (this is fast with Numba)
+
+# --- SECTOR-BASED CONFIGURATION ---
+# The image will be divided into a grid of sectors (e.g., 5x5 = 25 sectors)
+N_SECTORS_X = 4
+N_SECTORS_Y = 4
+# Each sector will have its own small population of agents
+AGENTS_PER_SECTOR = 1
+# Each agent in a sector will manage this many shapes
+SHAPES_PER_AGENT = 20
+
+# --- NEW OVERLAP PARAMETER ---
+# A value of 0.25 means sectors will overlap by 25% of their width/height.
+# Good values are typically between 0.15 and 0.5.
+SECTOR_OVERLAP = 0.7 # Needs addjustment based on number of agents.
 # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
-def render_full_agent(agent: 'Agent', sds_instance: 'DiffusionSearch') -> np.ndarray:
-    """Helper function to render a full image of a single agent."""
-    target_image = sds_instance.target
-    h, w, _ = target_image.shape
-    canvas = np.full((h, w, 4), sds_instance.background_color, dtype=np.float32)
+def render_final_image(all_shapes: list, width: int, height: int, background_color: tuple) -> np.ndarray:
+    """
+    Renders a final image by drawing a list of shapes onto a canvas.
+    This function is used at the end of the process to create the output file.
+    """
+    print(f"Rendering final image with {len(all_shapes)} total shapes...")
+    canvas = np.full((height, width, 4), background_color, dtype=np.float32)
 
-    for shape in agent.shapes:
-        # Determine the shape's bounding box as floats first
+    for shape in all_shapes:
+        # Determine the shape's bounding box
         if isinstance(shape, Circle):
             fx1, fy1 = shape.center[0] - shape.radius, shape.center[1] - shape.radius
             fx2, fy2 = shape.center[0] + shape.radius, shape.center[1] + shape.radius
@@ -59,20 +73,23 @@ def render_full_agent(agent: 'Agent', sds_instance: 'DiffusionSearch') -> np.nda
 
         # Clamp the bounding box to the screen and convert to integers
         x1, y1 = max(0, int(fx1)), max(0, int(fy1))
-        x2, y2 = min(w, int(np.ceil(fx2))), min(h, int(np.ceil(fy2)))
+        x2, y2 = min(width, int(np.ceil(fx2))), min(height, int(np.ceil(fy2)))
         
         if x1 >= x2 or y1 >= y2:
             continue
         
         box_w, box_h = x2 - x1, y2 - y1
         shape_layer = np.zeros((box_h, box_w, 4), dtype=np.float32)
-        shape_color_bgra = tuple(map(int, (shape.color[2], shape.color[1], shape.color[0], shape.color[3])))
+        
+        # Convert shape's RGBA color to BGRA for OpenCV
+        shape_color_bgra = (shape.color[2], shape.color[1], shape.color[0], shape.color[3])
 
         # Draw the shape onto the small layer with relative coordinates
         if isinstance(shape, Circle):
             center_local = (int(shape.center[0] - x1), int(shape.center[1] - y1))
             cv2.circle(shape_layer, center_local, int(shape.radius), shape_color_bgra, -1)
         elif isinstance(shape, Rectangle):
+            # For rectangles, the bounding box *is* the shape
             cv2.rectangle(shape_layer, (0, 0), (box_w, box_h), shape_color_bgra, -1)
         elif isinstance(shape, Triangle):
             points_local = np.array([
@@ -80,7 +97,7 @@ def render_full_agent(agent: 'Agent', sds_instance: 'DiffusionSearch') -> np.nda
             ], dtype=np.int32)
             cv2.fillPoly(shape_layer, [points_local], shape_color_bgra)
 
-        # The canvas region and the shape layer are now guaranteed to have the same dimensions
+        # Alpha blend the shape layer onto the main canvas
         canvas_region = canvas[y1:y2, x1:x2]
         alpha = shape_layer[:, :, 3:4] / 255.0
         canvas[y1:y2, x1:x2] = shape_layer * alpha + canvas_region * (1.0 - alpha)
@@ -90,7 +107,7 @@ def render_full_agent(agent: 'Agent', sds_instance: 'DiffusionSearch') -> np.nda
 
 def main():
     """
-    Runs the full Stochastic Diffusion Search process.
+    Runs the full sector-based Stochastic Diffusion Search process.
     """
     try:
         print(f"Loading target image from: {INPUT_IMAGE_PATH}")
@@ -109,26 +126,43 @@ def main():
     print(f"Generating a {PALETTE_SIZE}-color palette...")
     palette = generate_palette_kmeans(target_image, PALETTE_SIZE)
 
+    # Pack all configuration parameters into a dictionary
+    sds_config = {
+        'n_agents_per_sector': AGENTS_PER_SECTOR,
+        'shapes_per_agent': SHAPES_PER_AGENT,
+        'n_samples': N_SAMPLES,
+        'background_color': (255, 255, 255, 255)
+    }
+
+    # Initialize the main SDS manager with the sector layout and config
     sds = DiffusionSearch(
         target=target_image,
         palette=palette,
-        n_agents=N_AGENTS,
-        shapes_per_agent=SHAPES_PER_AGENT,
-        n_samples=N_SAMPLES
+        n_sectors_x=N_SECTORS_X,
+        n_sectors_y=N_SECTORS_Y,
+        sector_overlap=SECTOR_OVERLAP, # Pass the new parameter here
+        **sds_config
     )
+    
+    # Run the main evolution loop
     sds.run(iterations=ITERATIONS)
 
-    all_final_agents = sds.get_best_agents(n=sds.n_agents)
+    # Collect the final shapes from the best agent of each sector
+    final_shapes = sds.get_final_shapes()
 
-    if not all_final_agents:
-        print("SDS process finished, but no best agent could be determined.")
+    if not final_shapes:
+        print("SDS process finished, but no shapes were generated.")
         return
-        
-    top_agent = all_final_agents[0]
-    print("Rendering the best agent...")
-    final_image = render_full_agent(top_agent, sds)
     
-    print(f"💾 Saving best agent's image to {OUTPUT_FILENAME}")
+    # Render the composite image from the collected shapes
+    final_image = render_final_image(
+        all_shapes=final_shapes,
+        width=PROCESSING_WIDTH,
+        height=PROCESSING_HEIGHT,
+        background_color=sds.background_color
+    )
+
+    print(f"💾 Saving final composite image to {OUTPUT_FILENAME}")
     save_image(OUTPUT_FILENAME, final_image)
     print("\n✅ Process Complete.")
 
