@@ -26,15 +26,16 @@ OUTPUT_FILENAME  = "final_best_agent.png"
 
 PROCESSING_WIDTH = 250
 PROCESSING_HEIGHT = 250
-ITERATIONS = 5
+
+
+ITERATIONS = 5000
 N_AGENTS = 10
 SHAPES_PER_AGENT = 100
-PALETTE_SIZE = 250
+PALETTE_SIZE = 500
 
 # --- NEW LEARNING PARAMETERS ---
-N_SAMPLES = 100 # The number of blocks to sample per iteration
+N_SAMPLES = 150 # The number of blocks to sample per iteration
 BLOCK_SIZE = 5  # The size of the evaluation blocks (e.g., 5x5 pixels)
-THRESHOLD_MULTIPLIER = 0.90 # Makes the threshold stricter than the average
 
 
 def render_full_agent(agent: 'Agent', sds_instance: 'DiffusionSearch') -> np.ndarray:
@@ -90,8 +91,7 @@ def main():
         'n_agents': N_AGENTS,
         'shapes_per_agent': SHAPES_PER_AGENT,
         'n_samples': N_SAMPLES,
-        'background_color': average_color,
-        'threshold_multiplier': THRESHOLD_MULTIPLIER
+        'background_color': average_color
     }
 
     sds = DiffusionSearch(
