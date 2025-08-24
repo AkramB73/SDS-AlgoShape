@@ -23,10 +23,12 @@ class DiffusionSearch:
         self.img_size = (target.shape[1], target.shape[0])
         self.population = [Agent(self.img_size, self.palette, self.shapes_per_agent) for _ in range(n_agents)]
 
+        # --- MODIFIED: Pass n_agents to the evaluator ---
         self.evaluator = MetalEvaluator(
             target_image=self.target,
             shapes_per_agent=self.shapes_per_agent,
-            n_samples=self.n_samples
+            n_samples=self.n_samples,
+            n_agents=self.n_agents
         )
 
     def step(self, current_iteration, total_iterations, block_size: int):
@@ -55,7 +57,6 @@ class DiffusionSearch:
         return len(active_agents), current_threshold
 
     def run(self, iterations, block_size):
-        # --- MODIFIED: Removed the problematic print line ---
         print(f"Starting SDS with {self.n_agents} agents for {iterations} iterations...")
         print("Using Metal for GPU acceleration.")
         print(f"Using sample block size: {block_size}x{block_size}")

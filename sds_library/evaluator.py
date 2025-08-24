@@ -8,7 +8,8 @@ from .metal_kernels import EVALUATOR_KERNEL_CODE
 from .agent import Agent
 
 class MetalEvaluator:
-    def __init__(self, target_image: np.ndarray, shapes_per_agent: int, n_samples: int):
+    # --- MODIFIED: Added n_agents to the initializer ---
+    def __init__(self, target_image: np.ndarray, shapes_per_agent: int, n_samples: int, n_agents: int):
         print("Initializing Metal evaluator...")
         
         self.device = mc.Device()
@@ -23,10 +24,19 @@ class MetalEvaluator:
         self.n_samples_buffer = self.device.buffer(np.uint32(self.n_samples).tobytes())
         self.image_width_buffer = self.device.buffer(np.uint32(self.img_width).tobytes())
 
-        scores_size = 50 * 4 
+        # --- MODIFIED: Buffer sizes are now dynamic based on n_agents ---
+        pop_params_size = n_agents * self.shapes_per_agent * 7 * 4
+        pop_colors_size = n_agents * self.shapes_per_agent * 4 * 4
+        scores_size = n_agents * 4
+        
+        self.pop_params_buffer = self.device.buffer(pop_params_size)
+        self.pop_colors_buffer = self.device.buffer(pop_colors_size)
         self.scores_buffer = self.device.buffer(scores_size)
+        
+        blocks_size = self.n_samples * 2 * 4
+        self.blocks_buffer = self.device.buffer(blocks_size)
 
-        print("Metal device and kernel initialized successfully.")
+        print(f"Metal device initialized successfully for up to {n_agents} agents.")
 
 
     def evaluate(self, population: List[Agent], blocks: np.ndarray) -> np.ndarray:
@@ -34,20 +44,26 @@ class MetalEvaluator:
         if n_agents == 0:
             return np.array([])
 
-        pop_params = np.array([agent.shape_params for agent in population], dtype=np.float32).flatten()
+        pop_params = np.array([agent.shape_params for agent in population], dtype=np.float32)
         pop_colors_int = np.array([agent.shape_colors for agent in population], dtype=np.uint8)
         pop_colors_float = pop_colors_int.astype(np.float32) / 255.0
-        pop_colors = pop_colors_float.flatten()
+
+        params_view = memoryview(self.pop_params_buffer).cast('f')
+        colors_view = memoryview(self.pop_colors_buffer).cast('f')
+        blocks_view = memoryview(self.blocks_buffer).cast('i')
+
+        params_view[:pop_params.size] = pop_params.flatten()
+        colors_view[:pop_colors_float.size] = pop_colors_float.flatten()
+        blocks_view[:blocks.size] = blocks.flatten()
         
-        block_size_val = blocks.shape[1] if blocks.ndim > 1 and blocks.shape[1] > 0 else 0
-        block_size_arr = np.uint32(block_size_val)
+        block_size_arr = np.uint32(blocks.shape[1])
 
         handle = self.kernel(
             n_agents,
-            pop_params,
-            pop_colors,
+            self.pop_params_buffer,
+            self.pop_colors_buffer,
             self.target_image_buffer,
-            blocks,
+            self.blocks_buffer,
             block_size_arr,
             self.shapes_per_agent_buffer,
             self.n_samples_buffer,
@@ -57,11 +73,7 @@ class MetalEvaluator:
         
         del handle
         
-        # --- MODIFIED: Correct way to read data back from the buffer ---
-        # Create a memoryview of the buffer and cast it to the correct type.
         scores_view = memoryview(self.scores_buffer).cast('f')
-        
-        # Create a NumPy array from the view, slicing to the number of agents.
         scores = np.array(scores_view[:n_agents])
 
         return scores
