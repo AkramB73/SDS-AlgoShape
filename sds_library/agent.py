@@ -27,7 +27,7 @@ class Agent:
         img_width, img_height = self.img_size
         for _ in range(self.shapes_per_agent):
             # You can add Circle and Rectangle back to this list if you want to use them
-            shape_class = random.choice([Triangle, Circle, Rectangle]) 
+            shape_class = random.choice([Triangle]) 
             shape = shape_class(palette=self.palette)
             shape.random_init(img_width, img_height)
             self.shapes.append(shape)
@@ -51,7 +51,7 @@ class Agent:
         Applies small, refining changes to a few shapes instead of replacing them.
         """
         # Mutate 20% of the shapes, but at least one
-        num_to_mutate = max(1, int(self.shapes_per_agent * 0.2))
+        num_to_mutate = max(1, int(self.shapes_per_agent * 0.3))
         
         indices_to_mutate = random.sample(range(self.shapes_per_agent), num_to_mutate)
         
