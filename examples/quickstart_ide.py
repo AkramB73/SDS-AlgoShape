@@ -28,14 +28,14 @@ PROCESSING_WIDTH = 250
 PROCESSING_HEIGHT = 250
 
 
-ITERATIONS = 5000
+ITERATIONS = 100
 N_AGENTS = 10
 SHAPES_PER_AGENT = 100
 PALETTE_SIZE = 500
 
 # --- NEW LEARNING PARAMETERS ---
-N_SAMPLES = 150 # The number of blocks to sample per iteration
-BLOCK_SIZE = 5  # The size of the evaluation blocks (e.g., 5x5 pixels)
+N_SAMPLES = 300 # The number of blocks to sample per iteration
+BLOCK_SIZE = 7  # The size of the evaluation blocks (e.g., 5x5 pixels)
 
 
 def render_full_agent(agent: 'Agent', sds_instance: 'DiffusionSearch') -> np.ndarray:

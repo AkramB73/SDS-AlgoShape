@@ -6,7 +6,8 @@ from typing import List, Tuple
 import uuid
 
 from .shapes import Shape, Circle, Rectangle, Triangle
-from .evaluator import render_pixel_jit
+# The render_pixel_jit import is no longer needed here
+# from .evaluator import render_pixel_jit
 
 class Agent:
     def __init__(self, img_size: Tuple[int, int], palette: list, shapes_per_agent: int):
@@ -17,8 +18,10 @@ class Agent:
         self.is_active: bool = False
         self.id = uuid.uuid4()
         
+        # --- MODIFIED: Changed shape_colors dtype to uint8 ---
+        # The Metal evaluator expects integer colors (0-255) to normalize.
         self.shape_params = np.empty((0, 7), dtype=np.float32)
-        self.shape_colors = np.empty((0, 4), dtype=np.float32)
+        self.shape_colors = np.empty((0, 4), dtype=np.uint8)
 
         self._create_random_shapes()
 
@@ -31,11 +34,13 @@ class Agent:
             shape = shape_class(palette=self.palette)
             shape.random_init(img_width, img_height)
             self.shapes.append(shape)
-        self._prepare_data_for_numba()
+        self._prepare_data_for_gpu()
 
-    def _prepare_data_for_numba(self):
+    def _prepare_data_for_gpu(self):
+        # Renamed from _prepare_data_for_numba
+        # --- MODIFIED: Changed shape_colors dtype to uint8 ---
         self.shape_params = np.zeros((self.shapes_per_agent, 7), dtype=np.float32)
-        self.shape_colors = np.zeros((self.shapes_per_agent, 4), dtype=np.float32)
+        self.shape_colors = np.zeros((self.shapes_per_agent, 4), dtype=np.uint8)
         for i, shape in enumerate(self.shapes):
             shape_type, params = shape.get_numba_data()
             # Pad the params array if it's smaller than 6 (for circles/rectangles)
@@ -60,10 +65,7 @@ class Agent:
             # Call the shape's own internal mutate method
             self.shapes[i].mutate(img_width, img_height)
 
-        # After mutating, rebuild the Numba data arrays
-        self._prepare_data_for_numba()
+        # After mutating, rebuild the GPU data arrays
+        self._prepare_data_for_gpu()
 
-    def render_pixel(self, x: int, y: int) -> Tuple[int, int, int, int]:
-        background_color = np.array((255, 255, 255, 255), dtype=np.float32)
-        final_color_arr = render_pixel_jit(x, y, self.shape_params, self.shape_colors, background_color)
-        return tuple(map(int, final_color_arr))
+    # The render_pixel method is no longer needed as evaluation is handled by the evaluator class.

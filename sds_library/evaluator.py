@@ -1,98 +1,76 @@
 # sds_library/evaluator.py
 
 import numpy as np
+import metalcompute as mc
 from typing import List, Tuple
-import cv2
-from numba import njit, prange
 
-from .shapes import Shape, Circle, Rectangle, Triangle
-# The 'Agent' import will be handled inside the function to avoid circular dependencies
+from .metal_kernels import EVALUATOR_KERNEL_CODE
+from .agent import Agent
 
-# --- Numba JIT-Compiled Rendering Functions ---
-
-# This function is unchanged. It's the fast engine for rendering a single pixel.
-@njit(fastmath=True, cache=True)
-def render_pixel_jit(x: int, y: int, shape_params: np.ndarray, shape_colors: np.ndarray, background_color: np.ndarray) -> np.ndarray:
-    final_color = background_color.copy()
-    
-    for i in range(shape_params.shape[0]):
-        params = shape_params[i]
-        shape_type = int(params[0])
+class MetalEvaluator:
+    def __init__(self, target_image: np.ndarray, shapes_per_agent: int, n_samples: int):
+        print("Initializing Metal evaluator...")
         
-        is_inside = False
-        if shape_type == 0: # Circle
-            is_inside = (x - params[1])**2 + (y - params[2])**2 < params[3]
-        elif shape_type == 1: # Rectangle
-            is_inside = (params[1] <= x < params[3]) and (params[2] <= y < params[4])
-        elif shape_type == 2: # Triangle
-            p1_x, p1_y, p2_x, p2_y, p3_x, p3_y = params[1], params[2], params[3], params[4], params[5], params[6]
-            d1 = (x - p3_x) * (p2_y - p3_y) - (p2_x - p3_x) * (y - p3_y)
-            d2 = (x - p1_x) * (p3_y - p1_y) - (p3_x - p1_x) * (y - p1_y)
-            c = (y - p1_y) * (p2_x - p1_x) - (x - p1_x) * (p2_y - p1_y)
-            if not ((d1 < 0 or d2 < 0 or c < 0) and (d1 > 0 or d2 > 0 or c > 0)):
-                 is_inside = True
-
-        if is_inside:
-            fg_color = shape_colors[i]
-            bg_color = final_color
-            fg_alpha = fg_color[3] / 255.0
-            bg_alpha = bg_color[3] / 255.0
-            final_color[:3] = fg_color[:3] * fg_alpha + bg_color[:3] * (1.0 - fg_alpha)
-            final_color[3] = (fg_alpha + bg_alpha * (1.0 - fg_alpha)) * 255.0
-
-    return final_color
-
-# ▼▼▼ THIS IS THE NEW PARALLEL BLOCK EVALUATOR ▼▼▼
-@njit(parallel=True, fastmath=True, cache=True)
-def parallel_block_test_jit(blocks: np.ndarray, block_size: int, shape_params: np.ndarray, shape_colors: np.ndarray, target_image: np.ndarray) -> float:
-    """
-    Calculates the total error across a set of sample blocks in parallel.
-    """
-    total_block_error = 0.0
-    background_color = np.array((255, 255, 255, 255), dtype=np.float32)
-
-    # The outer loop is parallel, iterating over each BLOCK.
-    for i in prange(blocks.shape[0]):
-        start_x, start_y = blocks[i, 0], blocks[i, 1]
+        self.device = mc.Device()
+        self.kernel = self.device.kernel(EVALUATOR_KERNEL_CODE).function("evaluate_population")
         
-        block_error = 0.0
-        # These inner loops iterate over the pixels *within* a block.
-        for y_offset in range(block_size):
-            for x_offset in range(block_size):
-                x = start_x + x_offset
-                y = start_y + y_offset
-                
-                predicted_color = render_pixel_jit(x, y, shape_params, shape_colors, background_color)
-                actual_color = target_image[y, x]
-                pixel_error = np.sum(np.abs(predicted_color - actual_color.astype(np.float32)))
-                block_error += pixel_error
+        self.img_height, self.img_width, _ = target_image.shape
+        self.shapes_per_agent = shapes_per_agent
+        self.n_samples = n_samples
+
+        self.target_image_buffer = self.device.buffer(target_image.tobytes())
+        self.shapes_per_agent_buffer = self.device.buffer(np.uint32(self.shapes_per_agent).tobytes())
+        self.n_samples_buffer = self.device.buffer(np.uint32(self.n_samples).tobytes())
+        self.image_width_buffer = self.device.buffer(np.uint32(self.img_width).tobytes())
+
+        scores_size = 50 * 4 
+        self.scores_buffer = self.device.buffer(scores_size)
+
+        print("Metal device and kernel initialized successfully.")
+
+
+    def evaluate(self, population: List[Agent], blocks: np.ndarray) -> np.ndarray:
+        n_agents = len(population)
+        if n_agents == 0:
+            return np.array([])
+
+        pop_params = np.array([agent.shape_params for agent in population], dtype=np.float32).flatten()
+        pop_colors_int = np.array([agent.shape_colors for agent in population], dtype=np.uint8)
+        pop_colors_float = pop_colors_int.astype(np.float32) / 255.0
+        pop_colors = pop_colors_float.flatten()
         
-        total_block_error += block_error
+        block_size_val = blocks.shape[1] if blocks.ndim > 1 and blocks.shape[1] > 0 else 0
+        block_size_arr = np.uint32(block_size_val)
+
+        handle = self.kernel(
+            n_agents,
+            pop_params,
+            pop_colors,
+            self.target_image_buffer,
+            blocks,
+            block_size_arr,
+            self.shapes_per_agent_buffer,
+            self.n_samples_buffer,
+            self.image_width_buffer,
+            self.scores_buffer
+        )
         
-    return total_block_error
+        del handle
+        
+        # --- MODIFIED: Correct way to read data back from the buffer ---
+        # Create a memoryview of the buffer and cast it to the correct type.
+        scores_view = memoryview(self.scores_buffer).cast('f')
+        
+        # Create a NumPy array from the view, slicing to the number of agents.
+        scores = np.array(scores_view[:n_agents])
 
-# --- Main Evaluator Functions ---
-
-# ▼▼▼ THE PARTIAL_TEST FUNCTION IS NOW A SIMPLE WRAPPER ▼▼▼
-def partial_test(agent: 'Agent', target_image: np.ndarray, blocks: List[Tuple[int, int]], block_size: int) -> float:
-    """
-    Prepares data and calls the fast, parallel JIT function to evaluate an agent using blocks.
-    """
-    from .agent import Agent # Import here to prevent circular dependency
-
-    if not blocks:
-        return 0.0
-
-    blocks_arr = np.array(blocks, dtype=np.int32)
-    
-    total_pixel_error = parallel_block_test_jit(blocks_arr, block_size, agent.shape_params, agent.shape_colors, target_image)
-    
-    num_pixels_checked = len(blocks) * block_size * block_size
-    return total_pixel_error / num_pixels_checked if num_pixels_checked > 0 else 0.0
+        return scores
 
 
-# full_fitness remains unchanged as it evaluates the entire image
-def full_fitness(agent_shapes: List[Shape], target_image: np.ndarray, background_color: tuple) -> float:
+def full_fitness(agent_shapes: List['Shape'], target_image: np.ndarray, background_color: tuple) -> float:
+    import cv2
+    from .shapes import Shape, Circle, Rectangle, Triangle
+
     h, w, _ = target_image.shape
     canvas = np.full((h, w, 4), background_color, dtype=np.float32)
 
