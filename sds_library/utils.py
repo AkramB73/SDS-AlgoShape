@@ -1,8 +1,8 @@
+# sds_library/utils.py
+
 import cv2
 import numpy as np
-
-
-
+from typing import List, Tuple
 
 def load_image(path: str) -> np.ndarray:
     image = cv2.imread(path, cv2.IMREAD_UNCHANGED)
@@ -23,9 +23,20 @@ def save_image(path: str, image_array: np.ndarray):
     cv2.imwrite(path, save_img)
     print(f"Image successfully saved to {path}")
 
-def sample_pixels(width: int, height: int, n: int): 
+def sample_pixels(width: int, height: int, n: int) -> List[Tuple[int, int]]: 
     xs = np.random.randint(0, width, n)
     ys = np.random.randint(0, height, n)
+    return list(zip(xs, ys))
+
+# ▼▼▼ THIS IS THE NEW FUNCTION ▼▼▼
+def sample_pixel_blocks(width: int, height: int, n: int, block_size: int) -> List[Tuple[int, int]]:
+    """
+    Generates N random (x, y) coordinates for the top-left corner of a
+    square block, ensuring the entire block is within the image bounds.
+    """
+    # We subtract block_size from the bounds to prevent blocks from going off-image
+    xs = np.random.randint(0, width - block_size, n)
+    ys = np.random.randint(0, height - block_size, n)
     return list(zip(xs, ys))
 
 def display_image(window_name: str, image_array: np.ndarray, delay: int = 1):
@@ -34,4 +45,4 @@ def display_image(window_name: str, image_array: np.ndarray, delay: int = 1):
     cv2.imshow(window_name, display_img)
     cv2.waitKey(delay)
 
-
+    

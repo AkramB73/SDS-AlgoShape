@@ -5,17 +5,14 @@ from typing import List, Tuple
 import cv2
 from numba import njit, prange
 
-# Import shape classes as before
-from .shapes import Circle, Rectangle, Triangle, Shape
-# The 'Agent' import is now moved inside the function that needs it
-# to break the circular dependency.
+from .shapes import Shape, Circle, Rectangle, Triangle
+# The 'Agent' import will be handled inside the function to avoid circular dependencies
 
 # --- Numba JIT-Compiled Rendering Functions ---
+
+# This function is unchanged. It's the fast engine for rendering a single pixel.
 @njit(fastmath=True, cache=True)
 def render_pixel_jit(x: int, y: int, shape_params: np.ndarray, shape_colors: np.ndarray, background_color: np.ndarray) -> np.ndarray:
-    """
-    Calculates the color of a single pixel. (UNCHANGED)
-    """
     final_color = background_color.copy()
     
     for i in range(shape_params.shape[0]):
@@ -45,42 +42,57 @@ def render_pixel_jit(x: int, y: int, shape_params: np.ndarray, shape_colors: np.
 
     return final_color
 
+# ▼▼▼ THIS IS THE NEW PARALLEL BLOCK EVALUATOR ▼▼▼
 @njit(parallel=True, fastmath=True, cache=True)
-def parallel_partial_test_jit(samples: np.ndarray, shape_params: np.ndarray, shape_colors: np.ndarray, target_image: np.ndarray) -> float:
+def parallel_block_test_jit(blocks: np.ndarray, block_size: int, shape_params: np.ndarray, shape_colors: np.ndarray, target_image: np.ndarray) -> float:
     """
-    Calculates the total error for a set of sample pixels in parallel. (UNCHANGED)
+    Calculates the total error across a set of sample blocks in parallel.
     """
-    total_error = 0.0
+    total_block_error = 0.0
     background_color = np.array((255, 255, 255, 255), dtype=np.float32)
 
-    for i in prange(samples.shape[0]):
-        x, y = samples[i, 0], samples[i, 1]
-        predicted_color = render_pixel_jit(x, y, shape_params, shape_colors, background_color)
-        actual_color = target_image[y, x]
-        error = np.sum(np.abs(predicted_color - actual_color.astype(np.float32)))
-        total_error += error
+    # The outer loop is parallel, iterating over each BLOCK.
+    for i in prange(blocks.shape[0]):
+        start_x, start_y = blocks[i, 0], blocks[i, 1]
         
-    return total_error
+        block_error = 0.0
+        # These inner loops iterate over the pixels *within* a block.
+        for y_offset in range(block_size):
+            for x_offset in range(block_size):
+                x = start_x + x_offset
+                y = start_y + y_offset
+                
+                predicted_color = render_pixel_jit(x, y, shape_params, shape_colors, background_color)
+                actual_color = target_image[y, x]
+                pixel_error = np.sum(np.abs(predicted_color - actual_color.astype(np.float32)))
+                block_error += pixel_error
+        
+        total_block_error += block_error
+        
+    return total_block_error
 
 # --- Main Evaluator Functions ---
-def partial_test(agent: 'Agent', target_image: np.ndarray, samples: List[Tuple[int, int]]) -> float:
+
+# ▼▼▼ THE PARTIAL_TEST FUNCTION IS NOW A SIMPLE WRAPPER ▼▼▼
+def partial_test(agent: 'Agent', target_image: np.ndarray, blocks: List[Tuple[int, int]], block_size: int) -> float:
     """
-    Prepares data and calls the fast, parallel JIT function to evaluate an agent.
+    Prepares data and calls the fast, parallel JIT function to evaluate an agent using blocks.
     """
-    # Import Agent class here to break the circular import
-    from .agent import Agent
-    
-    if not samples:
+    from .agent import Agent # Import here to prevent circular dependency
+
+    if not blocks:
         return 0.0
 
-    samples_arr = np.array(samples, dtype=np.int32)
-    total_error = parallel_partial_test_jit(samples_arr, agent.shape_params, agent.shape_colors, target_image)
+    blocks_arr = np.array(blocks, dtype=np.int32)
     
-    return total_error / len(samples)
+    total_pixel_error = parallel_block_test_jit(blocks_arr, block_size, agent.shape_params, agent.shape_colors, target_image)
+    
+    num_pixels_checked = len(blocks) * block_size * block_size
+    return total_pixel_error / num_pixels_checked if num_pixels_checked > 0 else 0.0
 
-# full_fitness function remains unchanged
+
+# full_fitness remains unchanged as it evaluates the entire image
 def full_fitness(agent_shapes: List[Shape], target_image: np.ndarray, background_color: tuple) -> float:
-    # ... (no changes needed here) ...
     h, w, _ = target_image.shape
     canvas = np.full((h, w, 4), background_color, dtype=np.float32)
 
@@ -97,28 +109,21 @@ def full_fitness(agent_shapes: List[Shape], target_image: np.ndarray, background
             fx2, fy2 = points.max(axis=0)
         else:
             continue
-
         x1, y1 = max(0, int(fx1)), max(0, int(fy1))
         x2, y2 = min(w, int(np.ceil(fx2))), min(h, int(np.ceil(fy2)))
-        
         if x1 >= x2 or y1 >= y2:
             continue
-        
         box_w, box_h = x2 - x1, y2 - y1
         shape_layer = np.zeros((box_h, box_w, 4), dtype=np.float32)
         shape_color_bgra = tuple(map(int, (shape.color[2], shape.color[1], shape.color[0], shape.color[3])))
-
         if isinstance(shape, Circle):
             center_local = (int(shape.center[0] - x1), int(shape.center[1] - y1))
             cv2.circle(shape_layer, center_local, int(shape.radius), shape_color_bgra, -1)
         elif isinstance(shape, Rectangle):
             cv2.rectangle(shape_layer, (0, 0), (box_w, box_h), shape_color_bgra, -1)
         elif isinstance(shape, Triangle):
-            points_local = np.array([
-                (int(p[0] - x1), int(p[1] - y1)) for p in [shape.p1, shape.p2, shape.p3]
-            ], dtype=np.int32)
+            points_local = np.array([(int(p[0] - x1), int(p[1] - y1)) for p in [shape.p1, shape.p2, shape.p3]], dtype=np.int32)
             cv2.fillPoly(shape_layer, [points_local], shape_color_bgra)
-
         canvas_region = canvas[y1:y2, x1:x2]
         alpha = shape_layer[:, :, 3:4] / 255.0
         canvas[y1:y2, x1:x2] = shape_layer * alpha + canvas_region * (1.0 - alpha)
