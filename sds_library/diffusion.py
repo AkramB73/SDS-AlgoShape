@@ -23,7 +23,7 @@ class DiffusionSearch:
         self.img_size = (target.shape[1], target.shape[0])
         self.population = [Agent(self.img_size, self.palette, self.shapes_per_agent) for _ in range(n_agents)]
 
-        # --- MODIFIED: Pass n_agents to the evaluator ---
+        # --- MODIFIED: Pass n_agents to the evaluator's constructor ---
         self.evaluator = MetalEvaluator(
             target_image=self.target,
             shapes_per_agent=self.shapes_per_agent,
@@ -58,7 +58,7 @@ class DiffusionSearch:
 
     def run(self, iterations, block_size):
         print(f"Starting SDS with {self.n_agents} agents for {iterations} iterations...")
-        print("Using Metal for GPU acceleration.")
+        print("Using Metal for GPU acceleration (Final Architecture).")
         print(f"Using sample block size: {block_size}x{block_size}")
 
         for i in range(iterations):
