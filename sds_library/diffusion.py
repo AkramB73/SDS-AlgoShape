@@ -12,28 +12,31 @@ from .palette import Palette
 from .shapes import Shape
 
 class DiffusionSearch:
-    def __init__(self, target, palette, n_agents=50, shapes_per_agent=25, n_samples=50, **config):
+    # --- MODIFIED: Added block_size to the constructor ---
+    def __init__(self, target, palette, n_agents=50, shapes_per_agent=25, n_samples=50, block_size=5, **config):
         self.target = target
         self.palette = palette
         self.n_agents = n_agents
         self.shapes_per_agent = shapes_per_agent
         self.n_samples = n_samples
+        # --- NEW: Store block_size ---
+        self.block_size = block_size
         self.config = config
         self.background_color = self.config.get('background_color', (255, 255, 255, 255))
         self.img_size = (target.shape[1], target.shape[0])
         self.population = [Agent(self.img_size, self.palette, self.shapes_per_agent) for _ in range(n_agents)]
 
-        # --- MODIFIED: Pass n_agents to the evaluator's constructor ---
         self.evaluator = MetalEvaluator(
             target_image=self.target,
             shapes_per_agent=self.shapes_per_agent,
             n_samples=self.n_samples,
-            n_agents=self.n_agents
+            n_agents=self.n_agents,
+            block_size=self.block_size # Pass the stored block_size
         )
 
-    def step(self, current_iteration, total_iterations, block_size: int):
-        """Performs one step of the diffusion search using the optimized Metal evaluator."""
-        blocks_list = sample_pixel_blocks(self.img_size[0], self.img_size[1], self.n_samples, block_size)
+    # --- MODIFIED: Removed block_size from step method ---
+    def step(self, current_iteration, total_iterations):
+        blocks_list = sample_pixel_blocks(self.img_size[0], self.img_size[1], self.n_samples, self.block_size)
         blocks_arr = np.array(blocks_list, dtype=np.int32)
 
         all_scores = self.evaluator.evaluate(self.population, blocks_arr)
@@ -42,28 +45,36 @@ class DiffusionSearch:
             return 0, 0.0
 
         population_average_error = np.mean(all_scores)
-        current_threshold = population_average_error
+        current_threshold = population_average_error * 0.95
 
         active_agents = [self.population[i] for i, score in enumerate(all_scores) if score < current_threshold]
 
+        inactive_agents = [agent for agent in self.population if agent not in active_agents]
+        num_to_reinitialize = int(len(inactive_agents) * 0.5)
+        agents_to_reinitialize = random.sample(inactive_agents, num_to_reinitialize)
+
         for agent in self.population:
-            if agent not in active_agents and active_agents:
-                mentor = random.choice(active_agents)
-                agent.shapes = copy.deepcopy(mentor.shapes)
-                agent.mutate()
-            elif not active_agents:
+            if not active_agents:
                 agent._create_random_shapes()
+            elif agent in inactive_agents:
+                if agent in agents_to_reinitialize:
+                    agent._create_random_shapes()
+                else:
+                    mentor = random.choice(active_agents)
+                    agent.shapes = copy.deepcopy(mentor.shapes)
+                    agent.mutate()
 
         return len(active_agents), current_threshold
 
-    def run(self, iterations, block_size):
+    # --- MODIFIED: Removed block_size from run method ---
+    def run(self, iterations):
         print(f"Starting SDS with {self.n_agents} agents for {iterations} iterations...")
-        print("Using Metal for GPU acceleration (Final Architecture).")
-        print(f"Using sample block size: {block_size}x{block_size}")
+        print("Using Metal for GPU reduction (Stable Architecture).")
+        print(f"Using sample block size: {self.block_size}x{self.block_size}")
 
         for i in range(iterations):
-            active_count, thresh = self.step(current_iteration=i, total_iterations=iterations, block_size=block_size)
-            print(f"Completed iteration {i+1}, active agents: {active_count}, threshold: {thresh:.2f}")
+            active_count, thresh = self.step(current_iteration=i, total_iterations=iterations)
+            print(f"Completed iteration {i}, active agents: {active_count}, threshold: {thresh:.2f}")
 
         print("SDS run complete.")
 
@@ -73,13 +84,9 @@ class DiffusionSearch:
         for agent in self.population:
             error = full_fitness(agent.shapes, self.target, self.background_color)
             agent_scores.append((error, agent))
-
-        if not agent_scores:
-            return []
-
+        if not agent_scores: return []
         agent_scores.sort(key=lambda item: item[0])
         sorted_agents = [agent for score, agent in agent_scores]
         if sorted_agents:
             print(f"Found best agent with fitness score (RMSE): {agent_scores[0][0]:.2f}")
-
         return sorted_agents[:n]

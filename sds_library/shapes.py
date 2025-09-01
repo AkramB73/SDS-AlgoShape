@@ -20,7 +20,7 @@ class Shape(abc.ABC):
     def color(self) -> RGBA:
         return self._color
 
-    def mutate_color(self, mutation_strength: int = 20):
+    def mutate_color(self, mutation_strength: int = 12):
         """Slightly alters the R, G, B, and Alpha channels of the shape."""
         r, g, b, a = self._color
         
@@ -46,7 +46,7 @@ class Shape(abc.ABC):
         pass
         
     @abc.abstractmethod
-    def mutate(self, img_width: int, img_height: int, mutation_strength: float = 0.05):
+    def mutate(self, img_width: int, img_height: int, mutation_strength: float = 0.15):
         """Applies a small, random change to the shape's properties."""
         pass
 

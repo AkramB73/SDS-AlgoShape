@@ -9,11 +9,10 @@ from .agent import Agent
 from .shapes import Shape
 
 class MetalEvaluator:
-    def __init__(self, target_image: np.ndarray, shapes_per_agent: int, n_samples: int, n_agents: int):
-        print("Initializing Metal evaluator (GPU Reduction)...")
+    def __init__(self, target_image: np.ndarray, shapes_per_agent: int, n_samples: int, n_agents: int, block_size: int):
+        print("Initializing Metal evaluator (Stable Architecture)...")
         
         self.device = mc.Device()
-        # --- MODIFIED: Compile both kernels ---
         self.error_kernel = self.device.kernel(EVALUATOR_KERNEL_CODE).function("evaluate_pixel_errors")
         self.reduce_kernel = self.device.kernel(EVALUATOR_KERNEL_CODE).function("reduce_pixel_errors")
         
@@ -21,14 +20,21 @@ class MetalEvaluator:
         self.shapes_per_agent = shapes_per_agent
         self.n_samples = n_samples
         self.n_agents = n_agents
+        self.block_size = block_size
 
-        # --- Constant Buffers ---
+        # --- ALL BUFFERS ARE NOW PRE-ALLOCATED HERE ---
+
+        # Constant Buffers
         self.target_image_buffer = self.device.buffer(target_image.tobytes())
-        self.shapes_per_agent_buffer = self.device.buffer(np.uint32(self.shapes_per_agent).tobytes())
-        self.n_samples_buffer = self.device.buffer(np.uint32(self.n_samples).tobytes())
+        self.shapes_per_agent_buffer = self.device.buffer(np.uint32(shapes_per_agent).tobytes())
+        self.n_samples_buffer = self.device.buffer(np.uint32(n_samples).tobytes())
         self.image_width_buffer = self.device.buffer(np.uint32(self.img_width).tobytes())
+        self.block_size_buffer = self.device.buffer(np.uint32(block_size).tobytes())
+        
+        pixels_per_agent = n_samples * (block_size * block_size)
+        self.pixels_per_agent_buffer = self.device.buffer(np.uint32(pixels_per_agent).tobytes())
 
-        # --- Pre-allocated Dynamic Buffers ---
+        # Reusable Buffers for Dynamic Data
         pop_params_size = n_agents * shapes_per_agent * 7 * 4
         pop_colors_size = n_agents * shapes_per_agent * 4 * 4
         self.pop_params_buffer = self.device.buffer(pop_params_size)
@@ -37,20 +43,12 @@ class MetalEvaluator:
         blocks_size = n_samples * 2 * 4
         self.blocks_buffer = self.device.buffer(blocks_size)
 
-        # Buffer for the final scores (output of the reduce kernel)
         self.scores_buffer = self.device.buffer(n_agents * 4)
 
-        # Intermediate buffer for pixel errors (output of error kernel, input to reduce kernel)
-        # Assuming a max block size to allocate a sufficiently large buffer
-        max_block_size = 10 
-        pixels_per_agent = n_samples * (max_block_size * max_block_size)
         total_pixels = n_agents * pixels_per_agent
         self.pixel_errors_buffer = self.device.buffer(total_pixels * 4)
-        
-        # A small buffer to pass the `pixels_per_agent` value to the reduce kernel
-        self.pixels_per_agent_buffer = self.device.buffer(4)
 
-        print(f"Metal device initialized for GPU reduction.")
+        print(f"Metal device initialized with stable, pre-allocated buffers.")
 
     def evaluate(self, population: List[Agent], blocks: np.ndarray) -> np.ndarray:
         n_agents = len(population)
@@ -61,41 +59,33 @@ class MetalEvaluator:
         pop_colors_int = np.array([agent.shape_colors for agent in population], dtype=np.uint8)
         pop_colors_float = pop_colors_int.astype(np.float32) / 255.0
 
+        # --- SAFE UPDATE: Write data into the existing buffers ---
         memoryview(self.pop_params_buffer).cast('f')[:pop_params.size] = pop_params.flatten()
         memoryview(self.pop_colors_buffer).cast('f')[:pop_colors_float.size] = pop_colors_float.flatten()
         memoryview(self.blocks_buffer).cast('i')[:blocks.size] = blocks.flatten()
         
-        block_size_val = blocks.shape[1]
-        block_size_arr = np.uint32(block_size_val)
-
-        pixels_per_block = block_size_val * block_size_val
+        pixels_per_block = self.block_size * self.block_size
         pixels_per_agent = self.n_samples * pixels_per_block
         total_threads = n_agents * pixels_per_agent
         
-        # --- 1. Run the Error Kernel ---
         handle1 = self.error_kernel(
             total_threads,
             self.pop_params_buffer, self.pop_colors_buffer,
             self.target_image_buffer, self.blocks_buffer,
             self.shapes_per_agent_buffer, self.n_samples_buffer,
-            block_size_arr, self.image_width_buffer,
+            self.block_size_buffer, self.image_width_buffer,
             self.pixel_errors_buffer
         )
         del handle1
-
-        # --- 2. Run the Reduction Kernel ---
-        # Update the helper buffer with the current pixels_per_agent value
-        memoryview(self.pixels_per_agent_buffer).cast('I')[0] = pixels_per_agent
         
         handle2 = self.reduce_kernel(
-            n_agents, # Launch one thread per agent
+            n_agents,
             self.pixel_errors_buffer,
             self.scores_buffer,
             self.pixels_per_agent_buffer
         )
         del handle2
         
-        # --- 3. Retrieve Final Scores ---
         scores_view = memoryview(self.scores_buffer).cast('f')
         scores = np.array(scores_view[:n_agents])
 
@@ -140,3 +130,4 @@ def full_fitness(agent_shapes: List[Shape], target_image: np.ndarray, background
     diff = np.subtract(target_image.astype(np.float32), rendered_image_uint8.astype(np.float32))
     rmse = np.sqrt(np.mean(np.square(diff)))
     return float(rmse)
+
