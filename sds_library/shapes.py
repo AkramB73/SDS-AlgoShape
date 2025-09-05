@@ -1,18 +1,14 @@
-# sds_library/shapes.py
-
 import abc
 import numpy as np
 import random
 from typing import Tuple, List
 
-# Type aliases remain the same
 RGBA = Tuple[int, int, int, int]
 Palette = List[Tuple[int, int, int]]
 
 class Shape(abc.ABC):
     def __init__(self, palette: Palette):
         rgb_color = random.choice(palette)
-        # Use a semi-transparent alpha for a nice layered look
         alpha = int(np.random.randint(50, 150))
         self._color: RGBA = rgb_color + (alpha,)
 
@@ -20,8 +16,7 @@ class Shape(abc.ABC):
     def color(self) -> RGBA:
         return self._color
 
-    def mutate_color(self, mutation_strength: int = 12):
-        """Slightly alters the R, G, B, and Alpha channels of the shape."""
+    def mutate_color(self, mutation_strength: int = 15):
         r, g, b, a = self._color
         
         r += np.random.randint(-mutation_strength, mutation_strength + 1)
@@ -46,8 +41,7 @@ class Shape(abc.ABC):
         pass
         
     @abc.abstractmethod
-    def mutate(self, img_width: int, img_height: int, mutation_strength: float = 0.15):
-        """Applies a small, random change to the shape's properties."""
+    def mutate(self, img_width: int, img_height: int, mutation_strength: float = 0.1):
         pass
 
 
@@ -75,7 +69,6 @@ class Triangle(Shape):
         
         self.p1, self.p2, self.p3 = tuple(points[0]), tuple(points[1]), tuple(points[2])
         self.mutate_color()
-
 
 
 class Circle(Shape):

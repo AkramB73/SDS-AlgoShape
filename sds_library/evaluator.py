@@ -1,16 +1,91 @@
-# sds_library/evaluator.py
-
 import numpy as np
-import metalcompute as mc
-from typing import List
+from typing import List, Tuple
 
-from .metal_kernels import EVALUATOR_KERNEL_CODE
-from .agent import Agent
-from .shapes import Shape
+from .shapes import Shape, Circle, Rectangle, Triangle
+
+try:
+    import metalcompute as mc
+    from .metal_kernels import EVALUATOR_KERNEL_CODE
+    METAL_AVAILABLE = True
+except ImportError:
+    METAL_AVAILABLE = False
+
+try:
+    from numba import njit, prange
+    NUMBA_AVAILABLE = True
+except ImportError:
+    NUMBA_AVAILABLE = False
+
+# --- NUMBA ---
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _evaluate_population_numba(population_params, population_colors, target_image, blocks, block_size):
+    n_agents = population_params.shape[0]
+    all_scores = np.zeros(n_agents, dtype=np.float64)
+    background_color = np.array((255, 255, 255, 255), dtype=np.float32)
+
+    for i in prange(n_agents):
+        agent_params = population_params[i]
+        agent_colors = population_colors[i]
+        
+        total_block_error = 0.0
+        for j in range(blocks.shape[0]):
+            start_x, start_y = blocks[j, 0], blocks[j, 1]
+            for y_offset in range(block_size):
+                for x_offset in range(block_size):
+                    x = start_x + x_offset
+                    y = start_y + y_offset
+                    
+                    final_color = background_color.copy()
+                    for k in range(agent_params.shape[0]):
+                        params = agent_params[k]
+                        shape_type = int(params[0])
+                        is_inside = False
+                        if shape_type == 2: # Triangle
+                            p1_x, p1_y, p2_x, p2_y, p3_x, p3_y = params[1], params[2], params[3], params[4], params[5], params[6]
+                            d1 = (x - p3_x) * (p2_y - p3_y) - (p2_x - p3_x) * (y - p3_y)
+                            d2 = (x - p1_x) * (p3_y - p1_y) - (p3_x - p1_x) * (y - p1_y)
+                            c = (y - p1_y) * (p2_x - p1_x) - (x - p1_x) * (p2_y - p1_y)
+                            if not ((d1 < 0 or d2 < 0 or c < 0) and (d1 > 0 or d2 > 0 or c > 0)):
+                                is_inside = True
+                        if is_inside:
+                            fg_color = agent_colors[k]
+                            bg_color = final_color
+                            fg_alpha = fg_color[3] / 255.0
+                            final_color[:3] = fg_color[:3] * fg_alpha + bg_color[:3] * (1.0 - fg_alpha)
+                            final_color[3] = (fg_alpha + final_color[3]/255.0 * (1.0 - fg_alpha)) * 255.0
+
+                    actual_color = target_image[y, x]
+                    total_block_error += np.sum(np.abs(final_color - actual_color.astype(np.float32)))
+
+        num_pixels_checked = blocks.shape[0] * block_size * block_size
+        all_scores[i] = total_block_error / num_pixels_checked if num_pixels_checked > 0 else 0.0
+        
+    return all_scores
+
+class NumbaEvaluator:
+    def __init__(self, target_image: np.ndarray, **kwargs):
+        if not NUMBA_AVAILABLE:
+            raise RuntimeError("Numba is not installed. Cannot use NumbaEvaluator.")
+        print("Using Numba (CPU).")
+        self.target_image = target_image
+
+    def evaluate(self, population: List['Agent'], blocks: np.ndarray) -> np.ndarray:
+        block_size = blocks.shape[1]
+        pop_params = np.array([agent.shape_params for agent in population], dtype=np.float32)
+        pop_colors = np.array([agent.shape_colors.astype(np.float32) for agent in population])
+
+        return _evaluate_population_numba(pop_params, pop_colors, self.target_image, blocks, block_size)
+
+
+
+# --- METAL ---
 
 class MetalEvaluator:
     def __init__(self, target_image: np.ndarray, shapes_per_agent: int, n_samples: int, n_agents: int, block_size: int):
-        print("Initializing Metal evaluator (Stable Architecture)...")
+        if not METAL_AVAILABLE:
+            raise RuntimeError("metalcompute is not installed or available on this system.")
+        print("Using Metal (GPU).")
         
         self.device = mc.Device()
         self.error_kernel = self.device.kernel(EVALUATOR_KERNEL_CODE).function("evaluate_pixel_errors")
@@ -22,9 +97,6 @@ class MetalEvaluator:
         self.n_agents = n_agents
         self.block_size = block_size
 
-        # --- ALL BUFFERS ARE NOW PRE-ALLOCATED HERE ---
-
-        # Constant Buffers
         self.target_image_buffer = self.device.buffer(target_image.tobytes())
         self.shapes_per_agent_buffer = self.device.buffer(np.uint32(shapes_per_agent).tobytes())
         self.n_samples_buffer = self.device.buffer(np.uint32(n_samples).tobytes())
@@ -34,7 +106,6 @@ class MetalEvaluator:
         pixels_per_agent = n_samples * (block_size * block_size)
         self.pixels_per_agent_buffer = self.device.buffer(np.uint32(pixels_per_agent).tobytes())
 
-        # Reusable Buffers for Dynamic Data
         pop_params_size = n_agents * shapes_per_agent * 7 * 4
         pop_colors_size = n_agents * shapes_per_agent * 4 * 4
         self.pop_params_buffer = self.device.buffer(pop_params_size)
@@ -42,24 +113,19 @@ class MetalEvaluator:
 
         blocks_size = n_samples * 2 * 4
         self.blocks_buffer = self.device.buffer(blocks_size)
-
         self.scores_buffer = self.device.buffer(n_agents * 4)
 
         total_pixels = n_agents * pixels_per_agent
         self.pixel_errors_buffer = self.device.buffer(total_pixels * 4)
 
-        print(f"Metal device initialized with stable, pre-allocated buffers.")
-
-    def evaluate(self, population: List[Agent], blocks: np.ndarray) -> np.ndarray:
+    def evaluate(self, population: List['Agent'], blocks: np.ndarray) -> np.ndarray:
         n_agents = len(population)
-        if n_agents == 0:
-            return np.array([])
+        if n_agents == 0: return np.array([])
 
         pop_params = np.array([agent.shape_params for agent in population], dtype=np.float32)
         pop_colors_int = np.array([agent.shape_colors for agent in population], dtype=np.uint8)
         pop_colors_float = pop_colors_int.astype(np.float32) / 255.0
 
-        # --- SAFE UPDATE: Write data into the existing buffers ---
         memoryview(self.pop_params_buffer).cast('f')[:pop_params.size] = pop_params.flatten()
         memoryview(self.pop_colors_buffer).cast('f')[:pop_colors_float.size] = pop_colors_float.flatten()
         memoryview(self.blocks_buffer).cast('i')[:blocks.size] = blocks.flatten()
@@ -69,46 +135,34 @@ class MetalEvaluator:
         total_threads = n_agents * pixels_per_agent
         
         handle1 = self.error_kernel(
-            total_threads,
-            self.pop_params_buffer, self.pop_colors_buffer,
-            self.target_image_buffer, self.blocks_buffer,
-            self.shapes_per_agent_buffer, self.n_samples_buffer,
-            self.block_size_buffer, self.image_width_buffer,
+            total_threads, self.pop_params_buffer, self.pop_colors_buffer,
+            self.target_image_buffer, self.blocks_buffer, self.shapes_per_agent_buffer,
+            self.n_samples_buffer, self.block_size_buffer, self.image_width_buffer,
             self.pixel_errors_buffer
         )
         del handle1
         
         handle2 = self.reduce_kernel(
-            n_agents,
-            self.pixel_errors_buffer,
-            self.scores_buffer,
-            self.pixels_per_agent_buffer
+            n_agents, self.pixel_errors_buffer, self.scores_buffer, self.pixels_per_agent_buffer
         )
         del handle2
         
         scores_view = memoryview(self.scores_buffer).cast('f')
-        scores = np.array(scores_view[:n_agents])
-
-        return scores
+        return np.array(scores_view[:n_agents])
 
 
 def full_fitness(agent_shapes: List[Shape], target_image: np.ndarray, background_color: tuple) -> float:
-    # This function remains unchanged
     import cv2
-    from .shapes import Circle, Rectangle, Triangle
     h, w, _ = target_image.shape
     canvas = np.full((h, w, 4), background_color, dtype=np.float32)
     for shape in agent_shapes:
         if isinstance(shape, Circle):
-            fx1, fy1 = shape.center[0] - shape.radius, shape.center[1] - shape.radius
-            fx2, fy2 = shape.center[0] + shape.radius, shape.center[1] + shape.radius
+            fx1, fy1, fx2, fy2 = shape.center[0] - shape.radius, shape.center[1] - shape.radius, shape.center[0] + shape.radius, shape.center[1] + shape.radius
         elif isinstance(shape, Rectangle):
-            fx1, fy1 = shape.top_left[0], shape.top_left[1]
-            fx2, fy2 = shape.bottom_right[0], shape.bottom_right[1]
+            fx1, fy1, fx2, fy2 = shape.top_left[0], shape.top_left[1], shape.bottom_right[0], shape.bottom_right[1]
         elif isinstance(shape, Triangle):
             points = np.array([shape.p1, shape.p2, shape.p3])
-            fx1, fy1 = points.min(axis=0)
-            fx2, fy2 = points.max(axis=0)
+            fx1, fy1 = points.min(axis=0); fx2, fy2 = points.max(axis=0)
         else: continue
         x1, y1, x2, y2 = max(0, int(fx1)), max(0, int(fy1)), min(w, int(np.ceil(fx2))), min(h, int(np.ceil(fy2)))
         if x1 >= x2 or y1 >= y2: continue
@@ -130,4 +184,3 @@ def full_fitness(agent_shapes: List[Shape], target_image: np.ndarray, background
     diff = np.subtract(target_image.astype(np.float32), rendered_image_uint8.astype(np.float32))
     rmse = np.sqrt(np.mean(np.square(diff)))
     return float(rmse)
-
