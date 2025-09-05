@@ -1,6 +1,6 @@
 # SDS-AlgoShape
 
-Inital implementation of AlgoShape, uses a diffusion-based optimisation algorithm to iteratively evolve a collection of shapes to match a target image.
+Inital implementation of AlgoShape, uses [Stochastic diffusion search](https://en.wikipedia.org/wiki/Stochastic_diffusion_search) to iteratively evolve a collection of shapes to match a target image.
 
 - **Dual Support:**
     - **Metal GPU Acceleration:** Optimized for Apple Silicon for highly efficient, low-power processing.
