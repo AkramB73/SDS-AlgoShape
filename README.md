@@ -33,16 +33,7 @@ To run the program, configure the parameters inside the `example_run.py` script 
     INPUT_IMAGE_PATH = "/path/to/your/image.jpg" # IMPORTANT: Change this path
     OUTPUT_FILENAME  = "final_best_agent.png"
     
-    PROCESSING_WIDTH = 250
-    PROCESSING_HEIGHT = 250
-    
-    ITERATIONS = 1000
-    N_AGENTS = 20
-    SHAPES_PER_AGENT = 100
-    PALETTE_SIZE = 200
-    N_SAMPLES = 200
-    BLOCK_SIZE = 5
-    shapes_used = [Triangle]
+    ....
     ```
     
 3. **Run the script** from your terminal:
